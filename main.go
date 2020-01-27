@@ -41,35 +41,54 @@ func main() {
 	client := github.NewClient(tc)
 
 	var sumPoints int
+
+	// https://developer.github.com/v3/issues/#list-issues
 	opts := &github.IssueListOptions{
+		ListOptions: github.ListOptions{
+			PerPage: 50,
+		},
 		Filter: "all",
+		State:  "open",
 		Labels: []string{*flagGitHubLabel},
 	}
-	issues, _, _ := client.Issues.ListByOrg(ctx, *flagGitHubOrganization, opts)
 
-	// Columns
-	fmt.Printf("%-70s\t%20s\t%20s\t%8s\t%s\n",
-		"Issue", "Milestone", "Assignee", "Points", "URL")
-	fmt.Printf("%-70s\t%20s\t%20s\t%8s\t%s\n",
-		"---", "---", "---", "---", "---")
-
-	for _, i := range issues {
-		points := getSizeValue(i)
-		sumPoints += points
-
-		var milestoneStr string
-		if milestone := i.GetMilestone(); milestone != nil {
-			milestoneStr = milestone.GetTitle()
+	for {
+		issues, resp, err := client.Issues.ListByOrg(ctx, *flagGitHubOrganization, opts)
+		if err != nil {
+			log.Fatalf("error listing GitHub issues: %v", err)
 		}
 
-		var assigneeStr string
-		if assignee := i.GetAssignee(); assignee != nil {
-			assigneeStr = assignee.GetName()
+		// Columns
+		fmt.Printf("%-70s\t%20s\t%20s\t%8s\t%s\n",
+			"Issue", "Milestone", "Assignee", "Points", "URL")
+		fmt.Printf("%-70s\t%20s\t%20s\t%8s\t%s\n",
+			"---", "---", "---", "---", "---")
+
+		for _, i := range issues {
+			points := getSizeValue(i)
+			sumPoints += points
+
+			var milestoneStr string
+			if milestone := i.GetMilestone(); milestone != nil {
+				milestoneStr = milestone.GetTitle()
+			}
+
+			var assigneeStr string
+			if assignee := i.GetAssignee(); assignee != nil {
+				assigneeStr = assignee.GetName()
+			}
+
+			fmt.Printf("%-70s\t%20s\t%20s\t%8d\t%s\n",
+				i.GetTitle(), milestoneStr, assigneeStr, points, i.GetHTMLURL())
 		}
 
-		fmt.Printf("%-70s\t%20s\t%20s\t%8d\t%s\n",
-			i.GetTitle(), milestoneStr, assigneeStr, points, i.GetHTMLURL())
+		// Fecth the next page of results as needed.
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
 	}
+
 	fmt.Printf("\n\nTOTAL SUM: %d\n", sumPoints)
 	fmt.Printf("AVG PER MILESTONE: %d\n", sumPoints/3.0)
 }
