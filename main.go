@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -10,33 +11,71 @@ import (
 	"golang.org/x/oauth2"
 )
 
+var (
+	flagGitHubOrganization = flag.String("org", "default", "GitHub organization to scan.")
+	flagGitHubLabel        = flag.String("label", "default", "GitHub label marking all issues to be included.")
+)
+
 func main() {
+	flag.Parse()
+
 	token := os.Getenv("GITHUB_AUTH_TOKEN")
 	if token == "" {
 		log.Fatal("Unauthorized: No token present")
 	}
+
+	if flagGitHubOrganization == nil || *flagGitHubOrganization == "" {
+		log.Fatal("Error: Required --org flag not proided.")
+	}
+	if flagGitHubLabel == nil || *flagGitHubLabel == "" {
+		log.Fatalf("Error: Required --label flag not provided.")
+	}
+
+	log.Printf(
+		"Scanning GitHub organization %q and all issues labeled %q...",
+		*flagGitHubOrganization, *flagGitHubLabel)
+
 	ctx := context.Background()
 	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
 	tc := oauth2.NewClient(ctx, ts)
 	client := github.NewClient(tc)
 
 	var sumPoints int
-	fmt.Printf("\n\nISSUES - POINTS\n")
-
 	opts := &github.IssueListOptions{
 		Filter: "all",
-		Labels: []string{"20Q1-svc"},
+		Labels: []string{*flagGitHubLabel},
 	}
-	issues, _, _ := client.Issues.ListByOrg(ctx, "pulumi", opts)
+	issues, _, _ := client.Issues.ListByOrg(ctx, *flagGitHubOrganization, opts)
+
+	// Columns
+	fmt.Printf("%-70s\t%20s\t%20s\t%8s\t%s\n",
+		"Issue", "Milestone", "Assignee", "Points", "URL")
+	fmt.Printf("%-70s\t%20s\t%20s\t%8s\t%s\n",
+		"---", "---", "---", "---", "---")
+
 	for _, i := range issues {
-		sizePoints := getSizeValue(i)
-		sumPoints += sizePoints
-		fmt.Printf("%s - %d\n", i.GetTitle(), sizePoints)
+		points := getSizeValue(i)
+		sumPoints += points
+
+		var milestoneStr string
+		if milestone := i.GetMilestone(); milestone != nil {
+			milestoneStr = milestone.GetTitle()
+		}
+
+		var assigneeStr string
+		if assignee := i.GetAssignee(); assignee != nil {
+			assigneeStr = assignee.GetName()
+		}
+
+		fmt.Printf("%-70s\t%20s\t%20s\t%8d\t%s\n",
+			i.GetTitle(), milestoneStr, assigneeStr, points, i.GetHTMLURL())
 	}
 	fmt.Printf("\n\nTOTAL SUM: %d\n", sumPoints)
 	fmt.Printf("AVG PER MILESTONE: %d\n", sumPoints/3.0)
 }
 
+// getSizeValue inspects the GitHub issue and returns the number of "points"
+// it is estimated to be.
 func getSizeValue(issue *github.Issue) int {
 	for _, l := range issue.Labels {
 		switch size := l.GetName(); size {
