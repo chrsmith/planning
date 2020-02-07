@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
+	"strings"
 
 	"github.com/google/go-github/v29/github"
 	"github.com/jedib0t/go-pretty/table"
@@ -84,7 +86,11 @@ func main() {
 		return
 	}
 
+	fmt.Println("\n# Points Per-Assignee\n")
 	renderPerAssignee(allIssues)
+
+	fmt.Println("\n# Points Per-Milestone\n")
+	renderPerMilestone(allIssues)
 }
 
 func createIssue(gitHubIssue *github.Issue) Issue {
@@ -93,6 +99,8 @@ func createIssue(gitHubIssue *github.Issue) Issue {
 	var milestoneStr string
 	if milestone := gitHubIssue.GetMilestone(); milestone != nil {
 		milestoneStr = milestone.GetTitle()
+	} else {
+		milestoneStr = "(none)"
 	}
 
 	var assigneeStr string
@@ -134,6 +142,8 @@ func renderTable(issues []Issue, headerText string) {
 	t.AppendHeader(table.Row{headerText})
 	t.AppendHeader(table.Row{"Issue", "Milestone", "Assignee", "Points", "URL"})
 	var sumPoints int
+
+	sortIssues(issues)
 	for _, i := range issues {
 		sumPoints += i.Points
 		t.AppendRow([]interface{}{i.Issue, i.Milestone, i.Assignee, i.Points, i.URL})
@@ -142,14 +152,22 @@ func renderTable(issues []Issue, headerText string) {
 
 	t.AppendFooter(table.Row{"", "", "Total", sumPoints})
 
-	for milestone, points := range pointsPerMilestone {
+	// Sort per-milestone totals.
+	sortedMilestones := make([]string, 0, len(pointsPerMilestone))
+	for k := range pointsPerMilestone {
+		sortedMilestones = append(sortedMilestones, k)
+	}
+	sort.Strings(sortedMilestones)
+
+	for _, milestone := range sortedMilestones {
+		points := pointsPerMilestone[milestone]
 		milestoneText := fmt.Sprintf("Points for %s", milestone)
 		t.AppendFooter(table.Row{"", "", milestoneText, points})
 	}
 	t.Render()
 }
 
-func renderPerAssignee(issues []Issue) {
+func groupByAssignee(issues []Issue) map[string][]Issue {
 	issuesByAssignee := make(map[string][]Issue)
 
 	for _, i := range issues {
@@ -160,7 +178,124 @@ func renderPerAssignee(issues []Issue) {
 		}
 	}
 
-	for assignee, assignedIssues := range issuesByAssignee {
-		renderTable(assignedIssues, fmt.Sprintf("Issues for %s", assignee))
+	return issuesByAssignee
+}
+
+func groupByMilestone(issues []Issue) map[string][]Issue {
+	issuesByMilestone := make(map[string][]Issue)
+
+	for _, i := range issues {
+		if val, ok := issuesByMilestone[i.Milestone]; ok {
+			issuesByMilestone[i.Milestone] = append(val, i)
+		} else {
+			issuesByMilestone[i.Milestone] = []Issue{i}
+		}
 	}
+
+	return issuesByMilestone
+}
+
+func renderPerAssignee(issues []Issue) {
+	issuesByAssignee := groupByAssignee(issues)
+
+	// Get assignees, then sort.
+	sortedAssignees := make([]string, 0, len(issuesByAssignee))
+	for k := range issuesByAssignee {
+		sortedAssignees = append(sortedAssignees, k)
+	}
+	sort.Strings(sortedAssignees)
+
+	for _, assignee := range sortedAssignees {
+		assignedIssues := issuesByAssignee[assignee]
+		renderTable(assignedIssues, fmt.Sprintf("Issues for %s", assignee))
+
+		// Separate each individual person.
+		fmt.Println("\n")
+	}
+}
+
+// renderPerMilestone breaks things down with milestones as columns, and assignees as rows.
+func renderPerMilestone(allIssues []Issue) {
+	// Get assignees, then sort.
+	issuesByAssignee := groupByAssignee(allIssues)
+	sortedAssignees := make([]string, 0, len(issuesByAssignee))
+	for k := range issuesByAssignee {
+		sortedAssignees = append(sortedAssignees, k)
+	}
+	sort.Strings(sortedAssignees)
+
+	// Get milestones, then sort.
+	issuesByMilestone := groupByMilestone(allIssues)
+	sortedMilestones := make([]string, 0, len(issuesByMilestone))
+	for k := range issuesByMilestone {
+		sortedMilestones = append(sortedMilestones, k)
+	}
+	sort.Strings(sortedMilestones)
+
+	// Now we render the table. We iterate through the assignees, but
+	// build up the columns dynamically, grouping from all issues
+	// assigned to that user.
+	t := table.NewWriter()
+	t.SetOutputMirror(os.Stdout)
+	t.AppendHeader(table.Row{"Total for Team"})
+	headerRows := table.Row{"Assignee"}
+	for _, milestone := range sortedMilestones {
+		headerRows = append(headerRows, milestone)
+	}
+	t.AppendHeader(headerRows)
+
+	totalPointsByMilestone := make(map[string]int)
+	// For each assignee, break down issue totals by milestone.
+	for _, assignee := range sortedAssignees {
+		rowValues := []interface{}{assignee}
+
+		milestoneTotals := make(map[string]int)
+		assigneeIssuesByMilestone := groupByMilestone(issuesByAssignee[assignee])
+		for milestone, issuesInMilestone := range assigneeIssuesByMilestone {
+			var totalForMilestone int
+			for _, issueInMilestone := range issuesInMilestone {
+				totalForMilestone += issueInMilestone.Points
+			}
+			milestoneTotals[milestone] = totalForMilestone
+
+			// Add this individual's per-milestone total to the aggregate total.
+			if _, ok := totalPointsByMilestone[milestone]; !ok {
+				totalPointsByMilestone[milestone] = totalForMilestone
+			} else {
+				totalPointsByMilestone[milestone] = totalPointsByMilestone[milestone] + totalForMilestone
+			}
+		}
+
+		for _, milestone := range sortedMilestones {
+			rowValues = append(rowValues, milestoneTotals[milestone])
+		}
+		t.AppendRow(rowValues)
+	}
+
+	// Render the footer, with totals for the whole team.
+	footerRowValues := table.Row{"Total For Team"}
+	for _, milestone := range sortedMilestones {
+		footerRowValues = append(footerRowValues, totalPointsByMilestone[milestone])
+	}
+	t.AppendFooter(footerRowValues)
+
+	t.Render()
+}
+
+// sortIssues will sort the provided slice by assignee, milestone, size, then name.
+func sortIssues(issues []Issue) {
+	sort.SliceStable(issues, func(i, j int) bool {
+		issueI, issueJ := issues[i], issues[j]
+		if strings.Compare(issueI.Milestone, issueJ.Milestone) < 0 {
+			return true
+		}
+
+		if strings.Compare(issueI.Assignee, issueJ.Assignee) < 0 {
+			return false
+		}
+		if issueI.Points != issueJ.Points {
+			return issueI.Points > issueJ.Points // Higher point values first.
+		}
+		return strings.Compare(issueI.Issue, issueJ.Issue) < 0
+	})
 }
